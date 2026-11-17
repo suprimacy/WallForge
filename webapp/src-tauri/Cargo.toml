@@ -1,0 +1,51 @@
+[package]
+name = "wallforge"
+version = "1.0.0"
+description = "Browse the Steam Workshop and pull wallpapers into Wallpaper Engine"
+authors = ["WallForge"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "wallforge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "brotli", "deflate", "rustls-tls", "blocking"] }
+tokio = { version = "1", features = ["full"] }
+regex = "1"
+scraper = "0.20"
+html-escape = "0.2"
+base64 = "0.22"
+aes-gcm = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_Security_Cryptography",
+    "Win32_UI_Shell",
+] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[features]
+# Embed the web interface in the binary instead of serving it from disk.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

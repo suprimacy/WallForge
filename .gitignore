@@ -1,0 +1,25 @@
+﻿# Build output
+build/
+dist/
+webapp/src-tauri/target/
+webapp/src-tauri/gen/
+
+# Release archives (attach these to GitHub Releases instead of committing them)
+*.zip
+
+# Rust build artifacts
+webapp/src-tauri/Cargo.lock.orig
+**/*.rs.bk
+
+# Node
+webapp/node_modules/
+webapp/dist/
+
+# Local settings that must never be committed
+settings.json
+DepotDownloaderMod.backup-*/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
