@@ -260,7 +260,3 @@ WallForge is for personal use. Respect Steam's Terms of Service and the rights o
 ## License
 
 The bundled DepotDownloaderMod binary remains under **GPL-2.0**, and its license ships with it in [`vendor/DepotDownloaderMod/LICENSE`](vendor/DepotDownloaderMod/LICENSE).
-#   W a l l F o r g e  
- # WallForge
-# WallForge
-# WallForge
