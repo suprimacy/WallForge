@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="webapp/src-tauri/icons/icon.ico" alt="WallForge" width="96">
+<img src="docs/icon.png" alt="WallForge" width="96">
 
 # WallForge
 
