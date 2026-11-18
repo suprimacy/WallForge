@@ -382,22 +382,8 @@ fn download(
         .map(|blob| windows_crypto::unprotect_secret(blob))
         .unwrap_or_default();
 
-    // Experimental mode tries a ManifestHub manifest first. An expired or
-    // missing key is not fatal: the worker falls back to this same account.
-    let (manifest_token, note) = if settings.manifest_enabled {
-        let token = manifest::current_token(&settings);
-        if token.is_empty() {
-            (
-                Some(String::new()),
-                Some("No valid ManifestHub key - using the Steam account.".to_string()),
-            )
-        } else {
-            (Some(token), None)
-        }
-    } else {
-        (None, None)
-    };
-
+    // Anonymous mode tries a public manifest first; any failure falls back
+    // to this same account.
     state.depot.enqueue(
         &workshop_id,
         &title.unwrap_or_default(),
@@ -405,8 +391,8 @@ fn download(
         &account,
         &password,
         meta,
-        manifest_token,
-        note,
+        settings.manifest_enabled,
+        None,
     );
     Ok(json!({
         "success": true,
@@ -472,62 +458,11 @@ fn open_url(url: String) -> Value {
     }
 }
 
-/* ---------------- experimental ManifestHub manifests ---------------- */
-
-#[tauri::command]
-fn token_status(state: State<'_, AppState>) -> manifest::TokenStatus {
-    manifest::status(&state.settings())
-}
-
-/// Save a pasted key and stamp it with now. A bad-looking key is a warning,
-/// not a refusal — the API has the final say.
-#[tauri::command]
-fn token_save(token: String, state: State<'_, AppState>) -> Result<manifest::SaveResult, String> {
-    let token = token.trim().to_string();
-    let warning = if token.is_empty() || manifest::looks_like_token(&token) {
-        None
-    } else {
-        Some("That does not look like a ManifestHub key (expected hex).".to_string())
-    };
-    let saved_at = if token.is_empty() { 0 } else { manifest::now_secs() };
-    state.update_settings(|settings| {
-        settings.manifest_token = token.clone();
-        settings.manifest_token_time = saved_at;
-    });
-    Ok(manifest::SaveResult {
-        status: manifest::status_from(token, saved_at),
-        warning,
-    })
-}
-
-#[tauri::command]
-fn token_clear(state: State<'_, AppState>) -> Result<manifest::SaveResult, String> {
-    state.update_settings(|settings| {
-        settings.manifest_token.clear();
-        settings.manifest_token_time = 0;
-    });
-    Ok(manifest::SaveResult {
-        status: manifest::status_from(String::new(), 0),
-        warning: None,
-    })
-}
-
-/// Turnstile blocks automation, so this only opens the page for the user.
-#[tauri::command]
-fn token_open_key_page() -> Value {
-    match library::shell_open_manifest(manifest::KEY_GEN_URL) {
-        Ok(()) => json!({"success": true, "message": ""}),
-        Err(message) => json!({"success": false, "message": message}),
-    }
-}
+/* ---------------- experimental anonymous manifests ---------------- */
 
 #[tauri::command]
 fn experimental_status(state: State<'_, AppState>) -> Value {
-    let settings = state.settings();
-    json!({
-        "enabled": settings.manifest_enabled,
-        "tokenStatus": manifest::status(&settings),
-    })
+    json!({ "enabled": state.settings().manifest_enabled })
 }
 
 #[tauri::command]
@@ -709,10 +644,6 @@ pub fn run() {
             delete_download,
             open_folder,
             open_url,
-            token_status,
-            token_save,
-            token_clear,
-            token_open_key_page,
             experimental_status,
             experimental_set_enabled,
             browse_install_dir,

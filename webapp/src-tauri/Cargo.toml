@@ -1,6 +1,6 @@
 [package]
 name = "wallforge"
-version = "1.0.0"
+version = "1.0.1"
 description = "Browse the Steam Workshop and pull wallpapers into Wallpaper Engine"
 authors = ["WallForge"]
 edition = "2021"

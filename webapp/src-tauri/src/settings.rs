@@ -22,14 +22,7 @@ pub struct Settings {
     pub active_account: Option<String>,
     /// DPAPI protected passwords, keyed by lowercased account name.
     pub credentials: BTreeMap<String, String>,
-    /// Experimental ManifestHub API key, and when it was pasted.
-    /// A key lives 24 hours from issuance, so `manifest_token_time` is the
-    /// start of the countdown, not a "is valid" flag.
-    #[serde(default)]
-    pub manifest_token: String,
-    #[serde(default)]
-    pub manifest_token_time: i64,
-    /// When on, downloads try a ManifestHub manifest before the Steam account.
+    /// When on, downloads try an anonymous manifest before the Steam account.
     #[serde(default)]
     pub manifest_enabled: bool,
 }

@@ -61,8 +61,6 @@ pub struct Job {
     pub progress: f64,
     pub message: String,
     pub path: Option<String>,
-    /// Set on a rejected ManifestHub key so the interface can prompt for a new one.
-    pub error_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -96,9 +94,8 @@ struct JobRequest {
     password: String,
     /// The details of the item, kept so the library can show it later.
     meta: Option<serde_json::Value>,
-    /// `Some` means try the experimental ManifestHub path first; the string is
-    /// the key (empty when missing/expired). `None` uses the Steam account.
-    manifest_token: Option<String>,
+    /// When true, try an anonymous manifest before the Steam account.
+    use_manifest: bool,
     /// Why a manifest download fell back to the account, shown in the queue.
     note: Option<String>,
 }
@@ -147,7 +144,7 @@ impl Depot {
         account: &str,
         password: &str,
         meta: Option<serde_json::Value>,
-        manifest_token: Option<String>,
+        use_manifest: bool,
         note: Option<String>,
     ) {
         {
@@ -174,7 +171,6 @@ impl Depot {
                 progress: 0.0,
                 message: "Queued".to_string(),
                 path: None,
-                error_code: None,
             });
         }
         {
@@ -187,7 +183,7 @@ impl Depot {
                 account: account.to_string(),
                 password: password.to_string(),
                 meta,
-                manifest_token,
+                use_manifest,
                 note,
             });
         }
@@ -345,9 +341,9 @@ impl Depot {
             job.message = "Connecting to Steam...".to_string();
         });
 
-        // Experimental mode first; anything but a rejected key falls back to
-        // the account path so a missing manifest never blocks a download.
-        let outcome = if request.manifest_token.is_some() {
+        // Anonymous path first; if no manifest can be fetched, fall back to
+        // the account path so a provider hiccup never blocks a download.
+        let outcome = if request.use_manifest {
             match self.run_manifest(&request) {
                 Outcome::FallbackWith(reason) => {
                     request.note = Some(reason);
@@ -390,27 +386,6 @@ impl Depot {
                 job.state = JobState::Failed;
                 job.message = message;
             }),
-            Outcome::TokenRejected(message) => {
-                // A dead key will fail every item, so stop the whole batch.
-                self.update(&request.id, |job| {
-                    job.state = JobState::Failed;
-                    job.message = message.clone();
-                    job.error_code = Some("TOKEN_REJECTED".to_string());
-                });
-                let dropped = {
-                    let mut queue = self.queue.lock().unwrap();
-                    queue.drain(..).collect::<Vec<_>>()
-                };
-                for pending in dropped {
-                    self.update(&pending.id, |job| {
-                        if job.state == JobState::Queued {
-                            job.state = JobState::Failed;
-                            job.message = "Stopped: ManifestHub rejected the API key.".to_string();
-                            job.error_code = Some("TOKEN_REJECTED".to_string());
-                        }
-                    });
-                }
-            }
         }
     }
 }
@@ -422,8 +397,6 @@ enum Outcome {
     Cancelled,
     /// No usable manifest — try the Steam account, showing the reason.
     FallbackWith(String),
-    /// A 403 from ManifestHub: stop this item and every queued item behind it.
-    TokenRejected(String),
 }
 
 #[cfg(windows)]
@@ -488,9 +461,9 @@ impl Depot {
         self.run_tool(request, args, request.password.clone(), true)
     }
 
-    /// Experimental path: resolve the item's depot manifest, fetch it from
-    /// ManifestHub if it is not cached, then download with `-ugc` and the
-    /// depot key file — no Steam sign-in involved.
+    /// Anonymous path: resolve the item's manifest id, get a short request
+    /// code and the manifest from a SteamPipe CDN node, then download with
+    /// `-ugc` and a depot key — no Steam sign-in involved.
     fn run_manifest(&self, request: &JobRequest) -> Outcome {
         use crate::manifest;
 
@@ -498,7 +471,7 @@ impl Depot {
             job.message = "Looking up the item on Steam...".to_string();
         });
         let client = match reqwest::blocking::Client::builder()
-            .user_agent("WallForge/1.0 (ManifestHub)")
+            .user_agent("WallForge/1.0 (anonymous manifest)")
             .timeout(std::time::Duration::from_secs(30))
             .build()
         {
@@ -516,33 +489,23 @@ impl Depot {
             });
             cached
         } else {
-            let token = request.manifest_token.clone().unwrap_or_default();
-            if token.trim().is_empty() {
-                return Outcome::FallbackWith(
-                    "No ManifestHub key saved - using the Steam account.".to_string(),
-                );
-            }
-            let id = request.id.clone();
             let job_id = request.id.clone();
             let depot = self;
             self.update(&request.id, |job| {
-                job.message = "Fetching the manifest from ManifestHub...".to_string();
+                job.message = "Fetching a manifest code...".to_string();
             });
-            let bytes = match manifest::fetch_manifest(&gid, &token, |message| {
+            let bytes = match manifest::fetch_manifest(&gid, |message| {
                 depot.update(&job_id, |job| job.message = message.to_string());
             }) {
                 Ok(bytes) => bytes,
-                Err(err) if err.code == "TOKEN_REJECTED" => {
-                    return Outcome::TokenRejected(err.message)
-                }
                 Err(err) => {
                     return Outcome::FallbackWith(format!(
-                        "ManifestHub: {} - using the Steam account.",
+                        "Anonymous manifest: {} - using the Steam account.",
                         err.message
                     ))
                 }
             };
-            match manifest::stage_manifest(&id, &gid, &bytes, &request.target_dir) {
+            match manifest::stage_manifest(&request.target_dir, &gid, &bytes) {
                 Ok(path) => path,
                 Err(err) => {
                     return Outcome::FallbackWith(format!("{err} - using the Steam account."))
@@ -550,7 +513,7 @@ impl Depot {
             }
         };
 
-        let key_file = match manifest::ensure_depot_keys() {
+        let key_file = match manifest::ensure_key_file() {
             Ok(path) => path,
             Err(err) => return Outcome::FallbackWith(format!("{err} - using the Steam account.")),
         };

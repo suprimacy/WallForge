@@ -84,7 +84,6 @@ export default function App() {
   const [installOpen, setInstallOpen] = useState(false);
   const [experimentalOpen, setExperimentalOpen] = useState(false);
   const [experimental, setExperimental] = useState<ExperimentalStatus | null>(null);
-  const tokenRejectSeen = useRef(false);
   const [installInfo, setInstallInfo] = useState<Awaited<
     ReturnType<typeof api.info>
   > | null>(null);
@@ -199,14 +198,6 @@ export default function App() {
         const payload = await api.downloadQueue();
         const jobs = payload.jobs ?? [];
         if (!cancelled) setQueue(jobs);
-        const rejected = jobs.some((job) => job.error_code === "TOKEN_REJECTED");
-        if (!cancelled && rejected && !tokenRejectSeen.current) {
-          tokenRejectSeen.current = true;
-          setNotice("ManifestHub rejected the key. Paste a new one to keep downloading without Steam.");
-          void api.experimentalStatus().then(setExperimental).catch(() => undefined);
-          setExperimentalOpen(true);
-        }
-        if (!rejected) tokenRejectSeen.current = false;
       } catch {
         /* the queue is not available */
       }

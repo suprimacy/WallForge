@@ -275,11 +275,6 @@ pub fn shell_open_url(url: &str) -> Result<(), String> {
     shell_open_allowlisted(url, &["steamcommunity.com", "steampowered.com"])
 }
 
-/// The experimental key-generation page gets its own, equally narrow guard.
-pub fn shell_open_manifest(url: &str) -> Result<(), String> {
-    shell_open_allowlisted(url, &["manifesthub2.filegear-sg.me"])
-}
-
 fn shell_open_allowlisted(url: &str, hosts: &[&str]) -> Result<(), String> {
     use windows::core::PCWSTR;
     use windows::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW};

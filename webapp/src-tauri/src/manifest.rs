@@ -1,35 +1,41 @@
-//! Experimental downloads from ManifestHub manifests.
+//! Anonymous manifest downloads.
 //!
-//! A free ManifestHub key lives 24 hours. We persist when it was pasted and
-//! derive `missing / valid / expired` from that; the API's 403 is the only
-//! ground truth. Downloads can use a manifest instead of a Steam sign-in:
+//! Per item:
+//!   1. workshop id -> hcontent_file (Steam's public details API)
+//!   2. manifest id -> short-lived request code (gmrc.wudrm.com)
+//!   3. code -> SteamPipe CDN -> ZIP with member "z" = raw depot manifest
+//!   4. DepotDownloaderMod -ugc <id> -manifestfile <manifest> -depotkeys <key>
 //!
-//!   workshop id -> hcontent_file (Steam's keyless Web API)
-//!   -> GET ManifestHub?apikey&depotid&manifestid
-//!   -> stage in %TEMP%, keep one copy under <item>\.DepotDownloader\
-//!   -> DepotDownloaderMod -ugc <gid> -depotkeys ... -manifestfile ...
+//! No Steam account and no API key are involved. The code provider sees the
+//! caller's IP and the manifest id only. Set the standard HTTPS_PROXY
+//! environment variable to send that request through a proxy.
 
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use reqwest::blocking::Client;
 use serde::Serialize;
-use serde_json::Value;
 
-use crate::settings::Settings;
-use crate::steam;
+use crate::settings;
 
-pub const TOKEN_TTL_SECS: i64 = 24 * 60 * 60;
-pub const KEY_GEN_URL: &str = "https://manifesthub2.filegear-sg.me";
-const MANIFEST_API: &str = "https://api.manifesthub2.filegear-sg.me/manifest";
-const DEPOTKEYS_URL: &str =
-    "https://raw.githubusercontent.com/SteamAutoCracks/ManifestHub/main/depotkeys.json";
-const DEPOT_ID: &str = "431960";
-const WANTED_DEPOT_KEYS: [&str; 3] = ["431960", "431961", "1790230"];
-const KEY_FILE: &str = "431960.key";
+pub const APP_ID: &str = "431960";
+pub const DEPOT_ID: &str = "431960";
 pub const MANIFEST_MAGIC: [u8; 4] = [0xd0, 0x17, 0xf6, 0x71];
+const REQUEST_CODE_URL: &str = "https://gmrc.wudrm.com/manifest";
+const CDN_NODES: [&str; 6] = [
+    "cache6-par1.steamcontent.com",
+    "cache1-lhr1.steamcontent.com",
+    "cache1-ams1.steamcontent.com",
+    "cache1-fra1.steamcontent.com",
+    "cache10-sgp1.steamcontent.com",
+    "cache2-hkg1.steamcontent.com",
+];
+/// Public depot key for 431960, from ManifestHub's key list. Keys are stable,
+/// so embedding it avoids fetching their list on first run.
+const DEPOT_KEY: &str = "db983bc58a8cb46d89d1d70cc962cc733956e6124c4025a0c932f82b3c37144a";
+const KEY_FILE: &str = "431960.key";
 
 const MAX_ATTEMPTS: usize = 4;
 const RETRY_DELAYS: [Duration; 3] = [
@@ -37,144 +43,7 @@ const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(4),
     Duration::from_secs(8),
 ];
-const USER_AGENT: &str = "WallForge/1.0 (ManifestHub)";
-
-/* ---------------- token state ---------------- */
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TokenState {
-    Missing,
-    Valid,
-    Expired,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TokenStatus {
-    pub token: String,
-    /// Unix seconds when the key was pasted; 0 when empty.
-    pub saved_at: i64,
-    pub expires_at: i64,
-    /// Backend clock at measurement time; the UI anchors its countdown here.
-    pub measured_at: i64,
-    pub remaining_secs: i64,
-    pub state: TokenState,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveResult {
-    pub status: TokenStatus,
-    /// Set when the pasted text does not look like a ManifestHub key.
-    pub warning: Option<String>,
-}
-
-pub fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// Hex, at least 32 characters. A warning only — the API has the final say.
-pub fn looks_like_token(token: &str) -> bool {
-    let text = token.trim();
-    text.len() >= 32 && text.chars().all(|ch| ch.is_ascii_hexdigit())
-}
-
-pub fn status_from(token: String, saved_at: i64) -> TokenStatus {
-    let now = now_secs();
-    let has_token = !token.trim().is_empty();
-    let expires_at = if has_token && saved_at > 0 {
-        saved_at + TOKEN_TTL_SECS
-    } else {
-        0
-    };
-    let remaining_secs = if has_token && saved_at > 0 {
-        expires_at - now
-    } else {
-        0
-    };
-    let state = if !has_token {
-        TokenState::Missing
-    } else if remaining_secs > 0 {
-        TokenState::Valid
-    } else {
-        TokenState::Expired
-    };
-    TokenStatus {
-        token,
-        saved_at,
-        expires_at,
-        measured_at: now,
-        remaining_secs,
-        state,
-    }
-}
-
-pub fn status(settings: &Settings) -> TokenStatus {
-    status_from(settings.manifest_token.clone(), settings.manifest_token_time)
-}
-
-/// The key a download can use. Empty means missing or expired.
-pub fn current_token(settings: &Settings) -> String {
-    let status = status(settings);
-    if status.state == TokenState::Valid {
-        status.token
-    } else {
-        String::new()
-    }
-}
-
-/* ---------------- ManifestHub HTTP ---------------- */
-
-fn client(timeout: Duration) -> Result<Client, String> {
-    Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(timeout)
-        .build()
-        .map_err(|err| err.to_string())
-}
-
-fn snippet(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.len().min(300)])
-        .trim()
-        .to_string()
-}
-
-/// `workshop id -> hcontent_file`, via Steam's keyless details API.
-pub fn resolve_gid(client: &Client, workshop_id: &str) -> Result<String, String> {
-    let form = vec![
-        ("itemcount".to_string(), "1".to_string()),
-        ("publishedfileids[0]".to_string(), workshop_id.to_string()),
-    ];
-    let response = client
-        .post(steam::STEAM_API_URL)
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .form(&form)
-        .send()
-        .map_err(|err| err.to_string())?;
-    let payload: Value = response.json().map_err(|err| err.to_string())?;
-    let entry = payload
-        .pointer("/response/publishedfiledetails/0")
-        .ok_or_else(|| "Steam returned no details for this item.".to_string())?;
-    if entry.get("result").and_then(Value::as_i64) != Some(1) {
-        return Err("That item is private, removed, or unavailable.".to_string());
-    }
-    let gid = entry
-        .get("hcontent_file")
-        .map(|value| match value {
-            Value::String(text) => text.clone(),
-            Value::Number(number) => number.to_string(),
-            _ => String::new(),
-        })
-        .unwrap_or_default();
-    if gid.is_empty() || gid == "0" {
-        return Err("That item has no depot manifest; it may be a collection.".to_string());
-    }
-    Ok(gid)
-}
+const USER_AGENT: &str = "WallForge/1.0 (anonymous manifest)";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,10 +70,114 @@ impl std::fmt::Display for FetchError {
 }
 
 enum Attempt {
-    TokenRejected(String),
-    Missing(String),
     Fatal(String),
     Transient(String),
+}
+
+fn snippet(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(200)])
+        .trim()
+        .to_string()
+}
+
+/// Uses HTTPS_PROXY / HTTP_PROXY when set, so users can route the single
+/// code request through their own proxy without configuring the app.
+fn code_client() -> Result<Client, String> {
+    Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|err| err.to_string())
+}
+
+/// The CDN is always contacted directly — only the code request is proxied.
+fn cdn_client() -> Result<Client, String> {
+    Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(Duration::from_secs(60))
+        .no_proxy()
+        .build()
+        .map_err(|err| err.to_string())
+}
+
+/// `workshop id -> hcontent_file`, via Steam's keyless details API.
+pub fn resolve_gid(client: &Client, workshop_id: &str) -> Result<String, String> {
+    let form = vec![
+        ("itemcount".to_string(), "1".to_string()),
+        ("publishedfileids[0]".to_string(), workshop_id.to_string()),
+    ];
+    let response = client
+        .post(crate::steam::STEAM_API_URL)
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .form(&form)
+        .send()
+        .map_err(|err| err.to_string())?;
+    let payload: serde_json::Value = response.json().map_err(|err| err.to_string())?;
+    let entry = payload
+        .pointer("/response/publishedfiledetails/0")
+        .ok_or_else(|| "Steam returned no details for this item.".to_string())?;
+    if entry.get("result").and_then(serde_json::Value::as_i64) != Some(1) {
+        return Err("That item is private, removed, or unavailable.".to_string());
+    }
+    let gid = entry
+        .get("hcontent_file")
+        .map(|value| match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Number(number) => number.to_string(),
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+    if gid.is_empty() || gid == "0" {
+        return Err("That item has no depot manifest; it may be a collection.".to_string());
+    }
+    Ok(gid)
+}
+
+fn valid_code(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 20
+        && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn request_code_once(client: &Client, gid: &str) -> Result<String, Attempt> {
+    let url = format!("{REQUEST_CODE_URL}/{gid}");
+    let response = client
+        .get(&url)
+        .send()
+        .map_err(|err| Attempt::Transient(format!("network: {err}")))?;
+    let status = response.status().as_u16();
+    let body = response
+        .bytes()
+        .map_err(|err| Attempt::Transient(format!("network: {err}")))?;
+    let text = String::from_utf8_lossy(&body).trim().to_string();
+
+    if status == 400 {
+        return Err(Attempt::Fatal(format!(
+            "The code service rejected manifest {gid}: {}",
+            snippet(&body)
+        )));
+    }
+    if status == 404 {
+        return Err(Attempt::Fatal(format!(
+            "The code service has no code for manifest {gid}."
+        )));
+    }
+    if status == 429 || (500..=599).contains(&status) {
+        return Err(Attempt::Transient(format!("HTTP {status}")));
+    }
+    if status != 200 {
+        return Err(Attempt::Fatal(format!(
+            "Code service HTTP {status}: {}",
+            snippet(&body)
+        )));
+    }
+    if !valid_code(&text) {
+        return Err(Attempt::Transient(format!(
+            "unexpected code response {}",
+            snippet(&body)
+        )));
+    }
+    Ok(text)
 }
 
 fn unzip_manifest(raw: &[u8]) -> Result<Vec<u8>, String> {
@@ -229,105 +202,56 @@ fn unzip_manifest(raw: &[u8]) -> Result<Vec<u8>, String> {
     Ok(inner)
 }
 
-fn fetch_once(client: &Client, gid: &str, token: &str) -> Result<Vec<u8>, Attempt> {
-    let response = client
-        .get(MANIFEST_API)
-        .query(&[("apikey", token), ("depotid", DEPOT_ID), ("manifestid", gid)])
-        .send()
-        .map_err(|err| Attempt::Transient(format!("network: {err}")))?;
-
-    let status = response.status().as_u16();
-    let body = response
-        .bytes()
-        .map_err(|err| Attempt::Transient(format!("network: {err}")))?;
-
-    match status {
-        403 => {
-            return Err(Attempt::TokenRejected(
-                "ManifestHub rejected the API key. Open Experimental to save a new one.".to_string(),
-            ))
-        }
-        404 => {
-            return Err(Attempt::Missing(format!(
-                "ManifestHub has no copy of manifest {gid}."
-            )))
-        }
-        429 => return Err(Attempt::Transient("ManifestHub rate limited us (429).".to_string())),
-        500..=599 => {
-            return Err(Attempt::Transient(format!(
-                "HTTP {status} {}",
-                snippet(&body)
-            )))
-        }
-        other if !(200..=299).contains(&other) => {
-            return Err(Attempt::Fatal(format!(
-                "ManifestHub HTTP {other}: {}",
-                snippet(&body)
-            )))
-        }
-        _ => {}
+/// Normalise a CDN body to raw VZ manifest bytes.
+fn parse_manifest_payload(raw: &[u8]) -> Result<Vec<u8>, String> {
+    if raw.get(..4) == Some(&MANIFEST_MAGIC) {
+        return Ok(raw.to_vec());
     }
-
-    if body.is_empty() {
-        return Err(Attempt::Transient("ManifestHub returned an empty body.".to_string()));
+    if raw.get(..2) == Some(b"PK") {
+        return unzip_manifest(raw);
     }
-    if body.get(..4) == Some(&MANIFEST_MAGIC) {
-        return Ok(body.to_vec());
-    }
-    if body.get(..2) == Some(b"PK") {
-        return unzip_manifest(&body).map_err(Attempt::Fatal);
-    }
-
-    let text = snippet(&body);
-    if text.starts_with('{') {
-        let message = serde_json::from_slice::<Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or(text);
-        if message.to_lowercase().contains("unable to download") {
-            // They sometimes report this with a 200; a retry normally works.
-            return Err(Attempt::Transient(message));
-        }
-        return Err(Attempt::Fatal(format!("ManifestHub: {message}")));
-    }
-
-    Err(Attempt::Fatal(format!(
-        "unrecognised manifest payload ({} bytes)",
-        body.len()
-    )))
+    Err(format!("unrecognised manifest payload ({} bytes)", raw.len()))
 }
 
-/// Fetch raw `.manifest` bytes, retrying only transient failures.
-pub fn fetch_manifest(
-    gid: &str,
-    token: &str,
-    log: impl Fn(&str),
-) -> Result<Vec<u8>, FetchError> {
-    if token.trim().is_empty() {
-        return Err(FetchError::new(
-            "TOKEN_REJECTED",
-            "No ManifestHub key is saved. Open Experimental to add one.",
-            false,
-        ));
-    }
-    let client = client(Duration::from_secs(90))
-        .map_err(|err| FetchError::new("FATAL", format!("HTTP client: {err}"), false))?;
+/// Fetch a manifest: code from the provider, bytes from a SteamPipe CDN node.
+/// Network/429/5xx failures retry 4 times at 2/4/8s across all nodes.
+pub fn fetch_manifest(gid: &str, log: impl Fn(&str)) -> Result<Vec<u8>, FetchError> {
+    let code_client = code_client().map_err(|err| FetchError::new("FATAL", err, false))?;
+    let cdn = cdn_client().map_err(|err| FetchError::new("FATAL", err, false))?;
 
     let mut last = String::new();
     for attempt in 0..MAX_ATTEMPTS {
-        match fetch_once(&client, gid, token) {
+        let result = (|| -> Result<Vec<u8>, Attempt> {
+            let code = request_code_once(&code_client, gid)?;
+            let path = format!("/depot/{DEPOT_ID}/manifest/{gid}/5/{code}");
+            let mut problems = Vec::new();
+            for node in CDN_NODES {
+                let url = format!("https://{node}{path}");
+                let response = match cdn.get(&url).send() {
+                    Ok(response) => response,
+                    Err(err) => {
+                        problems.push(format!("{node}: network: {err}"));
+                        continue;
+                    }
+                };
+                let status = response.status().as_u16();
+                let body = match response.bytes() {
+                    Ok(body) => body,
+                    Err(err) => {
+                        problems.push(format!("{node}: read: {err}"));
+                        continue;
+                    }
+                };
+                if status == 200 && !body.is_empty() {
+                    return parse_manifest_payload(&body).map_err(Attempt::Fatal);
+                }
+                problems.push(format!("{node}: HTTP {status}"));
+            }
+            Err(Attempt::Transient(problems.join("; ")))
+        })();
+
+        match result {
             Ok(bytes) => return Ok(bytes),
-            Err(Attempt::TokenRejected(message)) => {
-                return Err(FetchError::new("TOKEN_REJECTED", message, false))
-            }
-            Err(Attempt::Missing(message)) => {
-                return Err(FetchError::new("MANIFEST_MISSING", message, false))
-            }
             Err(Attempt::Fatal(message)) => {
                 return Err(FetchError::new("FATAL", message, false))
             }
@@ -338,7 +262,7 @@ pub fn fetch_manifest(
                 }
                 let delay = RETRY_DELAYS[attempt.min(RETRY_DELAYS.len() - 1)];
                 log(&format!(
-                    "ManifestHub hiccup - retry {}/{} in {}s",
+                    "Manifest fetch hiccup - retry {}/{} in {}s",
                     attempt + 2,
                     MAX_ATTEMPTS,
                     delay.as_secs()
@@ -349,78 +273,44 @@ pub fn fetch_manifest(
     }
     Err(FetchError::new(
         "RETRY_EXHAUSTED",
-        format!("ManifestHub failed after {MAX_ATTEMPTS} attempts: {last}"),
+        format!("Manifest fetch failed after {MAX_ATTEMPTS} attempts: {last}"),
         true,
     ))
 }
 
-/* ---------------- depot keys and staging ---------------- */
+/* ---------------- local files ---------------- */
 
 fn key_file_path() -> PathBuf {
-    crate::settings::data_dir().join(KEY_FILE)
+    settings::data_dir().join(KEY_FILE)
 }
 
-fn key_file_has_depot(path: &Path, depot: &str) -> bool {
+fn key_file_has_depot(path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(path) else {
         return false;
     };
     text.lines()
-        .any(|line| line.trim_start().starts_with(&format!("{depot};")))
+        .any(|line| line.trim_start().starts_with(&format!("{DEPOT_ID};")))
 }
 
 /// Path to a key file containing the Wallpaper Engine depot key.
-/// Fetched once from ManifestHub's public list and cached in app data.
-pub fn ensure_depot_keys() -> Result<PathBuf, String> {
+pub fn ensure_key_file() -> Result<PathBuf, String> {
     let path = key_file_path();
-    if key_file_has_depot(&path, DEPOT_ID) {
+    if key_file_has_depot(&path) {
         return Ok(path);
     }
-
-    let client = client(Duration::from_secs(180))?;
-    let response = client
-        .get(DEPOTKEYS_URL)
-        .send()
-        .map_err(|err| format!("Could not download depot keys: {err}"))?;
-    let status = response.status().as_u16();
-    if status != 200 {
-        return Err(format!("Could not download depot keys (HTTP {status})."));
-    }
-    let table: Value = response
-        .json()
-        .map_err(|err| format!("Depot key list was not JSON: {err}"))?;
-
-    let mut lines = Vec::new();
-    for depot in WANTED_DEPOT_KEYS {
-        if let Some(key) = table.get(depot).and_then(Value::as_str) {
-            if !key.trim().is_empty() {
-                lines.push(format!("{depot};{}", key.trim()));
-            }
-        }
-    }
-    if !lines.iter().any(|line| line.starts_with(&format!("{DEPOT_ID};"))) {
-        return Err("The depot key list did not contain Wallpaper Engine's key.".to_string());
-    }
-
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
-    fs::write(&path, format!("{}\n", lines.join("\n"))).map_err(|err| err.to_string())?;
+    fs::write(&path, format!("{DEPOT_ID};{DEPOT_KEY}\n")).map_err(|err| err.to_string())?;
     Ok(path)
+}
+
+fn cache_dir(item_dir: &Path) -> PathBuf {
+    item_dir.join(".DepotDownloader")
 }
 
 pub fn manifest_name(gid: &str) -> String {
     format!("{DEPOT_ID}_{gid}.manifest")
-}
-
-pub fn cached_manifest(item_dir: &Path, gid: &str) -> Option<PathBuf> {
-    let path = item_dir
-        .join(".DepotDownloader")
-        .join(manifest_name(gid));
-    if is_manifest_file(&path) {
-        Some(path)
-    } else {
-        None
-    }
 }
 
 pub fn is_manifest_file(path: &Path) -> bool {
@@ -430,27 +320,23 @@ pub fn is_manifest_file(path: &Path) -> bool {
     bytes.get(..4) == Some(&MANIFEST_MAGIC)
 }
 
-/// Write through %TEMP%, then keep the only permanent copy beside the item.
-/// The staging file is removed even when the copy fails.
-pub fn stage_manifest(
-    workshop_id: &str,
-    gid: &str,
-    bytes: &[u8],
-    item_dir: &Path,
-) -> Result<PathBuf, String> {
-    let temp = std::env::temp_dir().join(format!(
-        "wallforge_{}_{}.manifest",
-        workshop_id, gid
-    ));
-    let final_path = item_dir
-        .join(".DepotDownloader")
-        .join(manifest_name(gid));
+/// A manifest cached beside the item never needs the provider again.
+pub fn cached_manifest(item_dir: &Path, gid: &str) -> Option<PathBuf> {
+    let path = cache_dir(item_dir).join(manifest_name(gid));
+    if is_manifest_file(&path) {
+        Some(path)
+    } else {
+        None
+    }
+}
 
+/// Write through %TEMP%, then keep the only copy in the item's .DepotDownloader.
+pub fn stage_manifest(item_dir: &Path, gid: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let temp = std::env::temp_dir().join(format!("wallforge_{gid}.manifest"));
+    let final_path = cache_dir(item_dir).join(manifest_name(gid));
     fs::write(&temp, bytes).map_err(|err| format!("Could not stage the manifest: {err}"))?;
     let result = (|| -> Result<(), String> {
-        if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
+        fs::create_dir_all(cache_dir(item_dir)).map_err(|err| err.to_string())?;
         fs::copy(&temp, &final_path)
             .map_err(|err| format!("Could not save the manifest: {err}"))?;
         Ok(())
@@ -486,48 +372,27 @@ pub fn depot_args(
     ]
 }
 
-const APP_ID: &str = "431960";
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn token_states_are_derived_from_the_saved_time() {
-        let now = now_secs();
-        assert_eq!(status_from(String::new(), 0).state, TokenState::Missing);
-        assert_eq!(status_from("a".repeat(76), 0).state, TokenState::Expired);
-        assert_eq!(
-            status_from("a".repeat(76), now - TOKEN_TTL_SECS + 30).state,
-            TokenState::Valid
-        );
-        assert_eq!(
-            status_from("a".repeat(76), now - TOKEN_TTL_SECS).state,
-            TokenState::Expired
-        );
+    fn codes_are_decimal_strings() {
+        assert!(valid_code("12345"));
+        assert!(valid_code(&"9".repeat(20)));
+        assert!(!valid_code(""));
+        assert!(!valid_code(&"9".repeat(21)));
+        assert!(!valid_code("12ab"));
     }
 
     #[test]
-    fn token_text_is_checked_but_not_trusted() {
-        assert!(looks_like_token(&format!("5daf5c94{}", "0".repeat(68))));
-        assert!(looks_like_token(&"a".repeat(76)));
-        assert!(!looks_like_token("not-hex-at-all"));
+    fn manifest_payloads_are_normalised() {
+        assert_eq!(parse_manifest_payload(&[0xd0, 0x17, 0xf6, 0x71, 1]).unwrap().len(), 5);
+        assert!(parse_manifest_payload(b"not a manifest").is_err());
     }
 
     #[test]
-    fn the_magic_identifies_a_manifest() {
-        let dir = std::env::temp_dir().join(format!("wallforge-manifest-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.manifest");
-        assert!(!is_manifest_file(&path));
-        fs::write(&path, [0xd0, 0x17, 0xf6, 0x71, 1, 2]).unwrap();
-        assert!(is_manifest_file(&path));
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn args_use_the_ugc_and_manifest_flags() {
+    fn depot_arguments_use_ugc_and_manifest() {
         let args = depot_args(
             Path::new("dd.exe"),
             "123",

@@ -10,7 +10,7 @@
 <img alt="Rust" src="https://img.shields.io/badge/rust-2021%2B-orange">
 <img alt="Tauri" src="https://img.shields.io/badge/tauri-2-24c8db">
 <img alt="React" src="https://img.shields.io/badge/react-19-61dafb">
-<img alt="Version" src="https://img.shields.io/badge/version-1.0.0-8b5cf6">
+<img alt="Version" src="https://img.shields.io/badge/version-1.0.1-8b5cf6">
 
 </div>
 
@@ -30,7 +30,7 @@ WallForge searches the Steam Workshop the way Wallpaper Engine itself does, down
 
 <p align="center">
   <img src="docs/screenshot-details.png" alt="Wallpaper details: creator, size, resolution, and genre" width="49%">
-  <img src="docs/screenshot-experimental.png" alt="Experimental ManifestHub token settings" width="49%">
+  <img src="docs/screenshot-experimental.png" alt="Experimental anonymous manifest settings" width="49%">
 </p>
 
 ## Features
@@ -42,7 +42,7 @@ WallForge searches the Steam Workshop the way Wallpaper Engine itself does, down
 | 🔎 **Search** | Search by keyword, or paste a Workshop ID to open that item directly |
 | 🧾 **Wallpaper details** | Click any card for the creator, file size, resolution, genre, type, age rating, rating count, and description — the same facts the official app shows |
 | 🔑 **Steam sign-in** | Sign in with your username and password, or scan a QR code with the Steam mobile app. Steam Guard codes are entered in the same dialog |
-| 🧪 **Experimental manifest downloads** | Optional ManifestHub key: download with a public depot manifest instead of a Steam sign-in, with automatic fallback to Steam |
+| 🧪 **Experimental anonymous downloads** | No account or API key: fetch a public manifest via a short-lived code, with automatic fallback to Steam |
 | 📥 **One-click downloads** | Fetched with DepotDownloaderMod and saved into `projects\myprojects\<id>` — real progress, not a fake bar |
 | 🗂️ **Library management** | Open a wallpaper's folder, remove it, and sort your library newest or oldest first |
 | 📁 **Install detection** | Finds Wallpaper Engine through the registry and every Steam library, with a manual folder picker when detection misses |
@@ -54,7 +54,7 @@ WallForge searches the Steam Workshop the way Wallpaper Engine itself does, down
 
 - **Windows 10 or 11 (64-bit)**
 - **Wallpaper Engine** installed — Steam or a standalone copy both work
-- **A Steam account** — sign in from the app with a password or QR code (optional if you use the experimental ManifestHub path)
+- **A Steam account** — sign in from the app with a password or QR code (optional if you use the experimental anonymous path)
 - **.NET 9 runtime** for the bundled DepotDownloaderMod ([download](https://dotnet.microsoft.com/download/dotnet/9.0))
 - **Rust 1.77+** and **Node 18+** only if you run or build from source
 - WebView2 runtime (already installed on Windows 11 and most Windows 10 systems)
@@ -181,14 +181,15 @@ Click the install chip in the header.
 
 A manual folder takes priority until you switch back to Automatic. If it is deleted later, WallForge quietly falls back to detection.
 
-### Experimental: download with a ManifestHub key
+### Experimental: anonymous downloads
 
-The **Experimental** chip in the header opens the panel for downloading without a Steam sign-in. It is off by default.
+The **Experimental** chip in the header opens the panel for downloading without a Steam sign-in. It is off by default. No account and no API key are involved.
 
-1. Press **Open key page** to get a free key from ManifestHub (valid for 24 hours from when it is issued), paste it into the field, and press **Save key**. The panel counts the key down and marks it expired when the time is up.
-2. Turn on **Use ManifestHub manifests**. A download now resolves the item's depot manifest through Steam's public details API, fetches it from ManifestHub if it is not already cached under `<item>\.DepotDownloader\`, stages it in `%TEMP%`, and runs DepotDownloaderMod with a depot key and `-ugc` instead of `-pubfile`.
+1. Turn on **Use anonymous manifests**.
 
-An already-cached manifest needs no key at all. When the key is missing or expired, when ManifestHub has no copy of that version (404), or when its servers fail after four attempts with a 2/4/8 second backoff, that download falls back to the normal Steam account. A rejected key (403) fails immediately and stops the rest of the queue so the remaining items do not fail one by one; WallForge reopens the panel and asks for a fresh key.
+The code service sees your IP and the manifest ID you request — nothing else. To send that one request through a proxy, set the standard `HTTPS_PROXY` environment variable before starting WallForge; wallpaper downloads always connect directly to Steam.
+
+Each download resolves the workshop ID to its manifest ID through Steam's public details API, requests a short-lived code from a public service, fetches the manifest ZIP from a SteamPipe CDN node, and hands the raw manifest and a depot key to DepotDownloaderMod with `-ugc`. Network or rate-limit failures retry four times at 2/4/8 seconds across several CDN nodes. The manifest is cached in the wallpaper's own `<item>\.DepotDownloader` folder, so a cached item never contacts the code service again. If no manifest can be fetched, that download falls back to the signed-in Steam account.
 
 ## Settings and data
 
@@ -197,8 +198,9 @@ An already-cached manifest needs no key at all. When the key is missing or expir
 | Steam usernames and install folder | `%APPDATA%\WallForge\settings.json` |
 | A download password you chose to keep | `%APPDATA%\WallForge\settings.json`, encrypted with Windows DPAPI |
 | Steam sign-in token | DepotDownloaderMod's per-user isolated storage (managed by the bundled backend, not stored by WallForge) |
-| ManifestHub key and save time | `%APPDATA%\WallForge\settings.json` |
-| Cached depot key file | `%LOCALAPPDATA%\WallForge\431960.key` |
+| Anonymous download mode | `%APPDATA%\WallForge\settings.json` |
+| Cached depot key | `%LOCALAPPDATA%\WallForge\431960.key` |
+| Cached manifests | `<Wallpaper Engine>\projects\myprojects\<id>\.DepotDownloader` |
 | Filter and sort choices | `%APPDATA%\WallForge\webview` (WebView2 profile) |
 | Downloaded wallpapers | `<Wallpaper Engine>\projects\myprojects\<workshop id>` |
 
@@ -247,10 +249,10 @@ cargo test
 
 ## Credits
 
-WallForge is a standalone project built on the work of others:
+WallForge is a standalone project built on the work of others. It is also **fully AI-assisted** — designed, implemented, and documented with AI.
 
 - **[SteamAutoCracks/DepotDownloaderMod](https://github.com/SteamAutoCracks/DepotDownloaderMod)** — the download backend, licensed **GPL-2.0**. Its license is included at [`vendor/DepotDownloaderMod/LICENSE`](vendor/DepotDownloaderMod/LICENSE). DepotDownloaderMod is itself based on [SteamRE/DepotDownloader](https://github.com/SteamRE/DepotDownloader).
-- **[SteamAutoCracks/ManifestHub](https://github.com/SteamAutoCracks/ManifestHub)** — the public depot manifests and depot keys used by the experimental download path.
+- **[SteamAutoCracks/ManifestHub](https://github.com/SteamAutoCracks/ManifestHub)** — the source of the public depot key used by the experimental anonymous download path.
 - Wallpaper metadata and search results come from Steam's public Workshop pages and Web API.
 
 ## Disclaimer

@@ -8,9 +8,7 @@ import type {
   InstallInfo,
   ItemDetails,
   LoginStatus,
-  SaveResult,
   SearchResult,
-  TokenStatus,
   WallpaperItem,
 } from "./types";
 
@@ -271,18 +269,6 @@ export const api = {
       { enabled },
       () => post<ActionResult>("/experimental", { enabled }),
     ),
-
-  tokenStatus: () =>
-    call<TokenStatus>("token_status", {}, () => httpRequest<TokenStatus>("/token")),
-
-  tokenSave: (token: string) =>
-    call<SaveResult>("token_save", { token }, () => post<SaveResult>("/token", { token })),
-
-  tokenClear: () =>
-    call<SaveResult>("token_clear", {}, () => post<SaveResult>("/token/clear")),
-
-  tokenOpenKeyPage: () =>
-    call<ActionResult>("token_open_key_page", {}, () => post<ActionResult>("/token/key-page")),
 
   authorWallpapers: (authorUrl: string) =>
     call<SearchResult>(

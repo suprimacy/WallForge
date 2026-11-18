@@ -93,31 +93,11 @@ export interface DownloadJob {
   progress: number;
   message: string;
   path?: string | null;
-  /** "TOKEN_REJECTED" on a dead ManifestHub key, so the UI can ask for a new one. */
-  error_code?: string | null;
 }
 
-export type TokenState = "missing" | "valid" | "expired";
-
-/** A ManifestHub key and its derived 24h state. */
-export interface TokenStatus {
-  token: string;
-  savedAt: number;
-  expiresAt: number;
-  /** Backend clock at measurement time; anchor the countdown here. */
-  measuredAt: number;
-  remainingSecs: number;
-  state: TokenState;
-}
-
-export interface SaveResult {
-  status: TokenStatus;
-  warning: string | null;
-}
-
+/** Anonymous manifest downloads. */
 export interface ExperimentalStatus {
   enabled: boolean;
-  tokenStatus: TokenStatus;
 }
 
 export interface InstallInfo {
