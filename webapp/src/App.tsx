@@ -518,7 +518,7 @@ export default function App() {
             id="experimental-info"
             type="button"
             className={`pill muted experimental-pill${experimental?.enabled ? " active" : ""}`}
-            title="ManifestHub key and experimental downloads"
+            title="Anonymous manifest downloads (experimental)"
             onClick={() => {
               void api.experimentalStatus().then(setExperimental).catch(() => undefined);
               setExperimentalOpen(true);

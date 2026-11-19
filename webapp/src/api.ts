@@ -254,7 +254,7 @@ export const api = {
       () => post<ActionResult>("/open-url", { url }),
     ),
 
-  /* ---- experimental ManifestHub manifests ---- */
+  /* ---- experimental anonymous manifests ---- */
 
   experimentalStatus: () =>
     call<ExperimentalStatus>(
