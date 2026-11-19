@@ -60,12 +60,10 @@ const DEPOT_FILES: &[DepotFile] = &[
     },
 ];
 
-/// Where the tool is unpacked.
+/// Where the tool is unpacked. Everything the app owns lives under
+/// `%APPDATA%\WallForge`, so the tool sits beside the settings file.
 pub fn depot_dir() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("WallForge").join("depot")
+    crate::settings::data_dir().join("depot")
 }
 
 /// Write the tool out if it is missing or the wrong size, and return the

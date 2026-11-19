@@ -6,7 +6,7 @@ WallForge does not download wallpapers itself. It runs this tool, which
 speaks the Steam content protocol, and reads its progress. The files here
 are the upstream build, unchanged, and they are compiled into `wallforge.exe`
 by `include_bytes!` (see `webapp/src-tauri/src/depot_bundle.rs`). The app
-writes them out to `%LOCALAPPDATA%\WallForge\depot` on first run, which is
+writes them out to `%APPDATA%\WallForge\depot` on first run, which is
 what lets the app ship as one file.
 
 Two things to know before changing anything here:

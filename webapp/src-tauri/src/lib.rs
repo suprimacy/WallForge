@@ -496,7 +496,8 @@ async fn browse_install_dir(app: tauri::AppHandle) -> Value {
 
 #[tauri::command]
 fn set_install_dir(path: String, state: State<'_, AppState>) -> Value {
-    let candidate = PathBuf::from(path.trim());
+    let cleaned = settings::tidy_path(&path);
+    let candidate = PathBuf::from(&cleaned);
     if !library::looks_like_we_install(&candidate) {
         return json!({
             "success": false,
@@ -504,11 +505,11 @@ fn set_install_dir(path: String, state: State<'_, AppState>) -> Value {
         });
     }
     state.update_settings(|settings| {
-        settings.install_dir = Some(candidate.to_string_lossy().to_string());
+        settings.install_dir = Some(cleaned.clone());
     });
     json!({
         "success": true,
-        "message": format!("Using {}", candidate.to_string_lossy()),
+        "message": format!("Using {}", settings::native_path(&cleaned)),
     })
 }
 
@@ -609,8 +610,11 @@ pub fn run() {
         .setup(|app| {
             let mut settings = Settings::load();
             let armed = import_shared_accounts(&mut settings);
-            if armed > 0 {
+            // Rewrite when a shared account was added or the stored path is
+            // still in the old escaped form.
+            if armed > 0 || settings.needs_save {
                 settings.save();
+                settings.needs_save = false;
             }
             // The download tool travels inside the binary and is written out
             // on first run, so the app ships as a single file.
@@ -624,6 +628,19 @@ pub fn run() {
                 client: steam::http_client().map_err(std::io::Error::other)?,
                 settings: Arc::new(Mutex::new(settings)),
             });
+
+            // The window is built here rather than from the config so its
+            // WebView2 profile can live with the rest of the app's data in
+            // %APPDATA%\WallForge instead of %LOCALAPPDATA%\<identifier>.
+            if let Some(window) = app.config().app.windows.first().cloned() {
+                let profile = settings::webview_dir();
+                if let Err(err) = std::fs::create_dir_all(&profile) {
+                    eprintln!("Could not create {}: {err}", profile.display());
+                }
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &window)?
+                    .data_directory(profile)
+                    .build()?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
