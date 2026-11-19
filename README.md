@@ -70,7 +70,7 @@ cd WallForge
 build.ps1
 ```
 
-`build.ps1` builds the interface with Vite, compiles the Rust core, and prints the path to `wallforge.exe`. For interface work, run `npm install` and then `npm run tauri dev` in `webapp`.
+`build.ps1` builds the interface with Vite, compiles the Rust core, and prints the path to `WallForge.exe`. For interface work, run `npm install` and then `npm run tauri dev` in `webapp`.
 
 | Path | What it holds |
 |---|---|

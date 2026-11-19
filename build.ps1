@@ -33,7 +33,7 @@ Pop-Location
 $ErrorActionPreference = $nativePref
 if ($buildCode -ne 0) { throw "The Rust build failed" }
 
-$exe = Join-Path $PSScriptRoot "webapp\src-tauri\target\release\wallforge.exe"
+$exe = Join-Path $PSScriptRoot "webapp\src-tauri\target\release\WallForge.exe"
 Write-Host ""
 Write-Host "Built $exe"
 Get-Item $exe |
@@ -42,4 +42,4 @@ Get-Item $exe |
 
 Write-Host ""
 Write-Host "The download tool travels inside the exe and is unpacked to %APPDATA%\WallForge\depot on first run."
-Write-Host "Nothing else needs to sit next to wallforge.exe."
+Write-Host "Nothing else needs to sit next to WallForge.exe."
