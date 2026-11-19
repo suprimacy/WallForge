@@ -245,24 +245,29 @@ async fn get_item(workshop_id: String, state: State<'_, AppState>) -> Result<Val
 #[tauri::command]
 async fn author_wallpapers(
     author_url: String,
+    page: Option<i64>,
     state: State<'_, AppState>,
 ) -> Result<Value, String> {
     if !steam::valid_author_url(&author_url) {
         return Err("That link does not look like a Steam author page.".to_string());
     }
+    let page = page.unwrap_or(1).max(1);
     let base = author_url.trim_end_matches('/');
-    let url = format!("{base}/myworkshopfiles/?appid=431960");
+    let url = format!(
+        "{base}/myworkshopfiles/?appid=431960&numperpage={}&p={page}",
+        steam::AUTHOR_PAGE_SIZE
+    );
     let response = steam::with_language(state.client.get(&url))
         .send()
         .await
         .map_err(|err| err.to_string())?;
     let html = response.text().await.map_err(|err| err.to_string())?;
     let items = steam::items_from_legacy_html(&html);
-    let total_count = items.len();
+    let (total_count, total_pages) = steam::listing_totals(&html, steam::AUTHOR_PAGE_SIZE);
     Ok(json!({
         "items": items,
-        "page": 1,
-        "total_pages": 1,
+        "page": page,
+        "total_pages": total_pages,
         "total_count": total_count,
     }))
 }

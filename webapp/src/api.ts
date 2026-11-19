@@ -270,11 +270,11 @@ export const api = {
       () => post<ActionResult>("/experimental", { enabled }),
     ),
 
-  authorWallpapers: (authorUrl: string) =>
+  authorWallpapers: (authorUrl: string, page = 1) =>
     call<SearchResult>(
       "author_wallpapers",
-      { authorUrl },
-      () => post<SearchResult>("/author-wallpapers", { author_url: authorUrl }),
+      { authorUrl, page },
+      () => post<SearchResult>("/author-wallpapers", { author_url: authorUrl, page }),
     ),
 
   browseInstallDir: () =>

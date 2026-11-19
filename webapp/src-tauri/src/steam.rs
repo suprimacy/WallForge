@@ -8,6 +8,8 @@ use reqwest::Client;
 use serde_json::{json, Value};
 
 pub const APP_ID: &str = "431960";
+/// Cards per page on an author's Workshop listing.
+pub const AUTHOR_PAGE_SIZE: i64 = 30;
 pub const WORKSHOP_BROWSE_URL: &str = "https://steamcommunity.com/workshop/browse/";
 pub const WORKSHOP_ITEM_URL: &str = "https://steamcommunity.com/sharedfiles/filedetails/";
 pub const STEAM_API_URL: &str =
@@ -315,6 +317,23 @@ fn strip_tags(html: &str) -> String {
     tags.replace_all(html, "").to_string()
 }
 
+/// How many entries and pages an author's Workshop listing holds.
+///
+/// Steam prints `Showing 1-30 of 35 entries` above the grid. The page size is
+/// fixed by the caller (`numperpage`), so the total is enough to work out the
+/// page count, including on the last, shorter page.
+pub fn listing_totals(html: &str, per_page: i64) -> (i64, i64) {
+    let entries = Regex::new(r"Showing\s+\d+\s*-\s*\d+\s+of\s+([\d,]+)\s+entr")
+        .ok()
+        .and_then(|regex| regex.captures(html))
+        .and_then(|captures| captures[1].replace(',', "").parse::<i64>().ok());
+    let per_page = per_page.max(1);
+    match entries {
+        Some(total) if total > 0 => (total, (total + per_page - 1) / per_page),
+        _ => (0, 1),
+    }
+}
+
 /// Browse the Workshop.
 #[allow(clippy::too_many_arguments)]
 pub async fn fetch_top_wallpapers(
@@ -553,9 +572,9 @@ pub fn parse_item_details(html: &str, workshop_id: &str) -> Result<Value, String
     let mut author = "Unknown".to_string();
     let mut author_url = String::new();
     if let Some(element) = select_one(&document, ".friendBlockContent") {
-        let text = element_text(element);
-        if !text.is_empty() {
-            author = text;
+        let name = author_name(element);
+        if !name.is_empty() {
+            author = name;
         }
     }
     if let Some(link) = select_one(&document, ".friendBlockLinkOverlay") {
@@ -680,13 +699,40 @@ fn select_all<'a>(root: &'a scraper::Html, selector: &str) -> Vec<scraper::Eleme
 
 /// The text of an element, with the whitespace collapsed.
 fn element_text(element: scraper::ElementRef<'_>) -> String {
-    element
-        .text()
-        .collect::<Vec<_>>()
-        .join("")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    collapse_whitespace(&element.text().collect::<Vec<_>>().join(""))
+}
+
+/// Collapse runs of whitespace, including the newlines Steam's markup uses.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The player's display name from the item page's `.friendBlockContent`.
+///
+/// That block also holds the player's presence — an `.friendSmallText` span
+/// reading `Online` or `Offline` — so its raw text is `Name Offline`. Take the
+/// text before the line break that separates the name from the status, and
+/// fall back to trimming the status label from the whole block when the name
+/// itself is wrapped in a link.
+fn author_name(element: scraper::ElementRef<'_>) -> String {
+    let mut before_break = String::new();
+    for child in element.children() {
+        match child.value() {
+            scraper::Node::Text(text) => before_break.push_str(text),
+            scraper::Node::Element(tag) if tag.name() == "br" => break,
+            _ => {}
+        }
+    }
+    let name = collapse_whitespace(&before_break);
+    if !name.is_empty() {
+        return name;
+    }
+
+    let status = select_one_in(element, ".friendSmallText")
+        .map(element_text)
+        .unwrap_or_default();
+    let full = element_text(element);
+    full.strip_suffix(&status).unwrap_or(&full).trim().to_string()
 }
 
 /// Full-size screenshots first, then the main preview as the last resort.
@@ -815,8 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn details_prefer_the_full_screenshot() {
-        let html = r##"
+    fn details_prefer_the_full_screenshot() {        let html = r##"
         <html><body>
           <h1 class="workshopItemTitle">Neon Alley</h1>
           <img id="previewImage" src="https://cdn.example/neon.jpg?imw=637">
@@ -834,6 +879,57 @@ mod tests {
             details["images"],
             json!(["https://cdn.example/big.jpg", "https://cdn.example/neon.jpg"])
         );
+    }
+
+    #[test]
+    fn the_author_name_drops_the_presence_label() {
+        let html = r##"
+        <html><body>
+          <h1 class="workshopItemTitle">Neon Alley</h1>
+          <div class="workshopTags"><span class="workshopTagsTitle">Type:</span><a href="#">Scene</a></div>
+          <div class="friendBlockContent">
+            V<br>
+            <span class="friendSmallText">
+              Offline
+            </span>
+          </div>
+          <a class="friendBlockLinkOverlay" href="https://steamcommunity.com/id/ParzivalV"></a>
+        </body></html>"##;
+        let details = parse_item_details(html, "888").expect("details must parse");
+        assert_eq!(details["author"], "V");
+        assert_eq!(
+            details["author_url"],
+            "https://steamcommunity.com/id/ParzivalV"
+        );
+    }
+
+    #[test]
+    fn the_author_name_survives_a_link_wrapped_name() {
+        let html = r##"
+        <html><body>
+          <h1 class="workshopItemTitle">Neon Alley</h1>
+          <div class="workshopTags"><span class="workshopTagsTitle">Type:</span><a href="#">Scene</a></div>
+          <div class="friendBlockContent">
+            <a href="https://steamcommunity.com/id/someone">Someone</a>
+            <span class="friendSmallText">Online</span>
+          </div>
+        </body></html>"##;
+        let details = parse_item_details(html, "888").expect("details must parse");
+        assert_eq!(details["author"], "Someone");
+    }
+
+    #[test]
+    fn an_author_listing_reports_its_pages() {
+        let html =
+            r#"<div class="workshopBrowsePagingInfo">Showing 31-35 of 35 entries</div>"#;
+        assert_eq!(listing_totals(html, 30), (35, 2));
+
+        let html =
+            r#"<div class="workshopBrowsePagingInfo">Showing 1-30 of 1,234 entries</div>"#;
+        assert_eq!(listing_totals(html, 30), (1234, 42));
+
+        // A page without the line still counts as one page.
+        assert_eq!(listing_totals("<html></html>", 30), (0, 1));
     }
 }
 

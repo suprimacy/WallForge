@@ -119,19 +119,22 @@ export default function App() {
     try {
       // The author view: items published by one creator, from their files page.
       if (authorFilter) {
-        const data = await api.authorWallpapers(authorFilter.url);
+        const data = await api.authorWallpapers(authorFilter.url, page);
         if (seq !== searchSeq.current) return;
         const items = (data.items ?? []).map((item) => ({
           ...item,
           author: item.author || authorFilter.name,
         }));
         setItems(items);
-        setTotalPages(1);
-        setTotalCount(items.length);
-        setPage(1);
+        if (typeof data.page === "number" && data.page > 0) setPage(data.page);
+        setTotalPages(data.total_pages ?? 0);
+        setTotalCount(data.total_count ?? 0);
+        const total = data.total_count ?? 0;
         setStatus(
           items.length
-            ? `${items.length} wallpaper${items.length === 1 ? "" : "s"} by ${authorFilter.name}`
+            ? total > items.length
+              ? `Showing ${items.length} of ${total.toLocaleString()} wallpapers by ${authorFilter.name}`
+              : `${total || items.length} wallpaper${(total || items.length) === 1 ? "" : "s"} by ${authorFilter.name}`
             : `No wallpapers by ${authorFilter.name}`,
         );
         void loadDownloads();
