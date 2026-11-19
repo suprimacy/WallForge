@@ -10,7 +10,7 @@
 <img alt="Rust" src="https://img.shields.io/badge/rust-2021%2B-orange">
 <img alt="Tauri" src="https://img.shields.io/badge/tauri-2-24c8db">
 <img alt="React" src="https://img.shields.io/badge/react-19-61dafb">
-<img alt="Version" src="https://img.shields.io/badge/version-1.0.1-8b5cf6">
+<img alt="Version" src="https://img.shields.io/badge/version-1.0.2-8b5cf6">
 
 </div>
 
