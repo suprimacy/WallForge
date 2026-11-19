@@ -41,6 +41,5 @@ Get-Item $exe |
     Format-Table -AutoSize
 
 Write-Host ""
-Write-Host "The app needs the DepotDownloaderMod folder next to it:"
-Get-ChildItem (Join-Path $PSScriptRoot "webapp\src-tauri\target\release\DepotDownloaderMod") |
-    Select-Object -ExpandProperty Name
+Write-Host "The download tool travels inside the exe and is unpacked to %APPDATA%\WallForge\depot on first run."
+Write-Host "Nothing else needs to sit next to wallforge.exe."
